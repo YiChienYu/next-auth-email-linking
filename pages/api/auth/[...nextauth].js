@@ -1,6 +1,5 @@
 require("dotenv").config();
 import NextAuth from "next-auth";
-
 import GitHubProvider from "next-auth/providers/github";
 import GoogleProvider from "next-auth/providers/google";
 import FacebookProvider from "next-auth/providers/facebook";
@@ -28,36 +27,34 @@ export default async function auth(req, res) {
     return new Date(date + time * 1000);
   };
 
-  // 參數留user就好
-  const assignProperAccount = async (user) => {
-    console.log("========assignProperAccount");
-    console.log(user);
+  const assignMember = async (user) => {
+    const member = await Member.findOne({
+      where: { email: user.email },
+    });
 
-    let isFound = false;
-    if (user.email) {
-      const c1 = await Member.findOne({
-        where: { email: user.email },
-      });
-      if (c1) {
-        isFound = true;
-        await User.update({ member_id: c1.id }, { where: { id: user.email } });
-      }
-    }
-
-    if (!isFound) {
-      const member = await Member.create({
-        user_id: user.email,
-        email: user.email ? user.email : "",
-      });
-
+    // find if member is already created, update users' member_id if true
+    if (member) {
       await User.update(
         { member_id: member.id },
-        { where: { email: user.email } }
+        { where: { id: user.email } }
       );
-      console.log(member.id);
-      console.log(isFound);
-      console.log("========assignProperAccount");
+    } else {
+      // create a member if member is not found and update users' member_id
+      const result = await Member.create({ email: user.email });
+      await User.update(
+        { member_id: result.id },
+        { where: { id: user.email } }
+      );
     }
+  };
+
+  const findUser = async (user) => {
+    const result = await User.findOne({ where: { email: user.email } });
+    return result ? true : false;
+  };
+
+  const deleteUser = async (user) => {
+    await User.destroy({ where: { email: user.email } });
   };
 
   const providers = [
@@ -124,35 +121,29 @@ export default async function auth(req, res) {
   ];
 
   const events = {
-    // linkAccount 發生在 createUser 之後
     async linkAccount({ user, providerAccount, account }) {
-      console.log("========linkAccount");
-      console.log(user);
-      console.log(account);
-      user.id = user.email;
-      // account.user_id = user.email;
+      console.log("===================linkAccountStart");
+      // modify account
       await Account.update(
         { user_id: user.email },
         { where: { provider_account_id: account.providerAccountId } }
       );
-      console.log("========linkAccount");
-      // 參數留user就好
-      await assignProperAccount(user);
+      // console.log(user);
+      // console.log(providerAccount);
+      // console.log(account);
+      console.log("===================linkAccountEnd");
     },
 
     async session({ session, token }) {
-      console.log("===================session");
-      console.log(session);
-      console.log("===================session");
+      console.log("===================sessionStart");
+      // console.log(session);
+      console.log("===================sessionEnd");
     },
 
-    async signIn({ user, account }) {
-      console.log("===================signIn");
-      // console.log(req.method);
-      console.log(user);
-      console.log(account);
-      console.log("===================signIn");
+    async signIn({ user, account, profile, isNewUser }) {
+      console.log("===================signInStart");
 
+      // find if the account with the same email is already exist, delete it if true
       const former = await Account.findOne(
         {
           where: {
@@ -179,78 +170,66 @@ export default async function auth(req, res) {
         });
       }
 
+      // find if the session with the same email is already exist, delete it if true
+      const former_session = await Session.findOne({
+        where: { user_id: user.email },
+      });
+
+      if (former_session) {
+        await Session.destroy({
+          where: { user_id: user.email },
+        });
+      }
+
+      // modify session
       await Session.update(
         { user_id: user.email },
         { where: { user_id: user.id } }
       );
+      // console.log(user);
+      // console.log(account);
+      // console.log(profile);
+      // console.log(isNewUser);
+      console.log("===================signInEnd");
+    },
+
+    async updateUser({ user }) {
+      console.log("===================updateUserStart");
+      // console.log(user);
+      console.log("===================updateUserEnd");
     },
 
     async createUser({ user }) {
-      console.log("===================createUser");
-      // console.log(req.query.nextauth);
-      console.log(user);
-      user.id = user.email;
+      console.log("===================createUserStart");
+      // console.log(user);
 
-      await User.update(
-        { id: user.email },
-        {
-          where: { email: user.email },
-        }
-      );
-      // 這邊應該可以拿掉
-      await assignProperAccount(user);
-
-      console.log("===================createUser");
+      // modify user
+      await User.update({ id: user.email }, { where: { id: user.id } });
+      await assignMember(user);
+      console.log("===================createUserEnd");
     },
   };
 
   const callbacks = {
     async signIn({ user, account, profile, email, credentials }) {
-      console.log(user);
-      console.log("====Account");
-      console.log(account);
-      console.log("====profile");
-      console.log(profile);
-      user.id = user.email;
-      let params = Object.assign({}, req.query);
+      // always delete user if find one
+      const is_user_created = await findUser(user);
 
-      if (
-        !req.query.nextauth.includes("google") &&
-        !req.query.nextauth.includes("facebook") &&
-        !req.query.nextauth.includes("github")
-      ) {
-        delete params.nextauth;
-
-        let targetUser = await User.findOne({
-          where: { id: user.id },
-        });
-
-        if (targetUser) {
-          params.image = null;
-          user.name = null;
-          await targetUser.update(user);
-        } else {
-          await User.create(Object.assign({}, user, params));
-        }
-
-        await assignProperAccount(user);
-      } else {
-        let targetUser = await User.findOne({
-          where: { id: user.id },
-        });
-        if (targetUser) {
-          await User.destroy({ where: { id: user.id } });
-        }
+      if (is_user_created) {
+        await deleteUser(user);
       }
-
+      console.log("===================callbacksSignInStart");
+      console.log(is_user_created);
+      // console.log(user);
+      // console.log("====Account");
+      // console.log(account);
+      // console.log("====profile");
+      // console.log(profile);
+      console.log("===================callbacksSignInEnd");
       return true;
     },
 
     async session({ session, token, user }) {
-      const fs = require("fs");
-      fs.appendFileSync("message.txt", "=========== IN Session\n");
-      fs.appendFileSync("message.txt", JSON.stringify(user));
-
       session.user.id = user.id;
       session.user.name = user.name;
       session.user.email = user.email;
